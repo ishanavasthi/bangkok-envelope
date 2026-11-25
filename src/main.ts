@@ -6,9 +6,10 @@ import { TerraDraw, TerraDrawPolygonMode, TerraDrawSelectMode, ValidateNotSelfIn
 import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter';
 import './style.css';
 import { centroid, distM, makeFrame, type Frame, type LngLat } from './engine/geo';
-import { area, intersect, pointInRing, segDist, toPolygons, type Pt, type Rings } from './engine/poly';
+import { remapRoad } from './engine/road';
+import { area, intersect, offset, pointInRing, segDist, toPolygons, type Pt, type Rings } from './engine/poly';
 import {
-  applicableRules, baseFootprint, designs, envelope, fmt, limits, roadSetback, TYPES,
+  applicableRules, baseFootprint, designs, envelope, fmt, frontageRun, limits, roadSetback, TYPES,
   type BuildingType, type Design, type Input, type Regime,
 } from './engine/model';
 import zoneY10 from './data/zone-y10.geojson?raw';
@@ -30,7 +31,7 @@ const SAMPLE: LngLat[] = [
 
 interface State {
   ring: LngLat[]; // open ring
-  roadSegs: [LngLat, LngLat][]; // road-facing edges, kept by position so edits don't lose them
+  roadIdx: number[]; // road-facing edges by index (edge i = ring[i] -> ring[i+1]); remapped when corners are added or removed
   roadWidth: number;
   type: BuildingType;
   farBonus: number;
@@ -40,7 +41,7 @@ interface State {
 }
 const st: State = {
   ring: SAMPLE,
-  roadSegs: [[SAMPLE[0], SAMPLE[1]]],
+  roadIdx: [0],
   roadWidth: 12,
   type: 'condo',
   farBonus: 0,
@@ -187,6 +188,7 @@ function setupDraw() {
     if (!f || !ids.includes(f.id as never)) return;
     const coords = (f.geometry as GeoJSON.Polygon).coordinates[0].slice(0, -1) as LngLat[];
     if (coords.length < 3) return;
+    st.roadIdx = remapRoad(st.ring, coords, st.roadIdx);
     st.ring = coords;
     cancelAnimationFrame(pending);
     pending = requestAnimationFrame(() => update());
@@ -197,8 +199,9 @@ function setupDraw() {
     if (!f || f.geometry.type !== 'Polygon') return;
     st.ring = (f.geometry.coordinates[0] as LngLat[]).slice(0, -1);
     st.drawing = false;
-    st.roadSegs = autoDetectRoad(st.ring);
+    st.roadIdx = autoDetectRoad(st.ring);
     loadRingIntoDraw();
+    pickBest = true;
     update();
     renderPanel();
   });
@@ -215,13 +218,12 @@ function startDrawing() {
   st.drawing = true;
   draw.clear();
   draw.setMode('polygon');
-  renderPanel();
   update();
 }
 
 const ROAD_W: Record<string, number> = { motorway: 40, trunk: 40, primary: 30, secondary: 20, tertiary: 12, minor: 8, service: 6 };
 /** Mark the edge(s) nearest to a mapped road and guess its width from the road class. */
-function autoDetectRoad(ring: LngLat[]): [LngLat, LngLat][] {
+function autoDetectRoad(ring: LngLat[]): number[] {
   const f = makeFrame(centroid(ring));
   const pts = ring.map(f.toLocal);
   const xs = ring.map((p) => map.project(p as [number, number]));
@@ -244,34 +246,16 @@ function autoDetectRoad(ring: LngLat[]): [LngLat, LngLat][] {
     }
   });
   if (best.d < 40) st.roadWidth = ROAD_W[best.cls] ?? 8;
-  return [[ring[best.i], ring[(best.i + 1) % ring.length]]];
+  return [best.i];
 }
 
 // ---------- model glue ----------
-function roadEdgeIdx(ring: LngLat[], frame: Frame): number[] {
-  const pts = ring.map(frame.toLocal);
-  const segs = st.roadSegs.map(([a, b]) => [frame.toLocal(a), frame.toLocal(b)] as [Pt, Pt]);
-  const out: number[] = [];
-  pts.forEach((a, i) => {
-    const b = pts[(i + 1) % pts.length];
-    const mid: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-    if (segs.some(([p, q]) => segDist(mid, p, q) < 1.5)) out.push(i);
-  });
-  return out;
-}
-
 function toggleRoad(i: number) {
-  const n = st.ring.length;
-  const seg: [LngLat, LngLat] = [st.ring[i], st.ring[(i + 1) % n]];
-  const frame = makeFrame(centroid(st.ring));
-  const idx = roadEdgeIdx(st.ring, frame);
-  if (idx.includes(i)) {
-    const mid = frame.toLocal([(seg[0][0] + seg[1][0]) / 2, (seg[0][1] + seg[1][1]) / 2]);
-    st.roadSegs = st.roadSegs.filter(([a, b]) => segDist(mid, frame.toLocal(a), frame.toLocal(b)) >= 1.5);
-  } else st.roadSegs = [...st.roadSegs, seg];
+  st.roadIdx = st.roadIdx.includes(i) ? st.roadIdx.filter((x) => x !== i) : [...st.roadIdx, i];
   update();
 }
 
+let pickBest = false;
 let last: { inp: Input; frame: Frame; ds: Design[]; zoneName: string; station: { name: string; d: number } } | null = null;
 
 function zoneShare(frame: Frame, plot: Pt[]): { share: number; name: string } {
@@ -322,11 +306,17 @@ function update() {
   const z = zoneShare(frame, plot);
   const station = nearestStation(c);
   const inp: Input = {
-    plot, roadEdges: roadEdgeIdx(ring, frame), roadWidth: st.roadWidth, type: st.type,
+    plot, roadEdges: st.roadIdx.filter((i) => i < ring.length), roadWidth: st.roadWidth, type: st.type,
     farBonus: st.farBonus, nearStation: station.d <= 500, inZoneShare: z.share,
   };
   const ds = designs(inp);
-  if (!ds.find((d) => d.id === st.selected)) st.selected = ds[0].id;
+  if (pickBest || !ds.find((d) => d.id === st.selected)) {
+    // New plot: show the biggest design that passes.
+    const ok = ds.filter((d) => d.pass).sort((x, y) => y.gfa - x.gfa);
+    st.selected = (ok[0] ?? ds[0]).id;
+    if (st.envelope !== 'none') st.envelope = ds.find((d) => d.id === st.selected)!.regime;
+    pickBest = false;
+  }
   last = { inp, frame, ds, zoneName: z.name, station };
   drawMap(inp, frame, ds);
   renderPanel();
@@ -378,31 +368,27 @@ function drawMap(inp: Input, frame: Frame, ds: Design[]) {
 }
 
 let hiddenKey = '';
+/**
+ * Hide the existing building(s) standing on the plot, so they don't poke
+ * through the new design. Tile feature ids are not unique (one id can cover
+ * a whole block), so we filter by geometry instead: any building that lies
+ * entirely within the plot, grown by 2 m to absorb mapping offsets.
+ */
 function hideBuildingsOnPlot() {
   if (!map.getLayer('building-3d') || !last || st.drawing) return;
-  const ring = st.ring;
-  const xs = ring.map((p) => map.project(p as [number, number]));
-  const bbox: [[number, number], [number, number]] = [[Math.min(...xs.map((p) => p.x)), Math.min(...xs.map((p) => p.y))], [Math.max(...xs.map((p) => p.x)), Math.max(...xs.map((p) => p.y))]];
-  const frame = last.frame;
-  const plot = ring.map(frame.toLocal);
-  const ids = new Set<number | string>();
-  for (const f of map.queryRenderedFeatures(bbox, { layers: ['building-3d'] })) {
-    if (f.id === undefined) continue;
-    const g = f.geometry;
-    const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
-    for (const poly of polys) {
-      const r = poly[0].slice(0, -1).map((p) => frame.toLocal(p as LngLat));
-      const a = Math.abs(area([r]));
-      if (a > 0 && area(intersect([plot], [r])) / a > 0.3) ids.add(f.id);
-    }
-  }
-  const key = [...ids].sort().join(',');
-  if (key === hiddenKey) return;
-  hiddenKey = key;
-  map.setFilter('building-3d', ids.size ? ['!', ['in', ['id'], ['literal', [...ids]]]] : null);
+  const grown = offset([last.inp.plot], 2);
+  const polys = toPolygons(grown).map((poly) => poly.map((r) => { const ll = r.map(last!.frame.toLngLat); return [...ll, ll[0]]; }));
+  const k = JSON.stringify(st.ring);
+  if (k === hiddenKey) return;
+  hiddenKey = k;
+  if (!polys.length) { map.setFilter('building-3d', null); return; }
+  map.setFilter('building-3d', ['!', ['within', { type: 'MultiPolygon', coordinates: polys }]] as never);
 }
 
 // ---------- panel ----------
+// The panel has two layers: a static shell with the controls (built once per
+// mode, so a slider is never replaced under the pointer) and result blocks
+// that are re-rendered on every update.
 const panel = document.getElementById('panel')!;
 const thaiArea = (A: number) => {
   const rai = Math.floor(A / 1600), ngan = Math.floor((A % 1600) / 400), wah = (A % 400) / 4;
@@ -413,51 +399,38 @@ const latinZone = (z: string) => z
   .replace(/[๐-๙]/g, (d) => String('๐๑๒๓๔๕๖๗๘๙'.indexOf(d)))
   .replace('ย', 'Y').replace('พ', 'C').replace('อ', 'I').replace('ก', 'A').replace('ศ', 'H').replace('ส', 'G');
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T | null;
 
 function refLink(ref: string) {
   const src = /MR 33/.test(ref) ? SOURCES.mr33 : /BMA ord/.test(ref) ? SOURCES.bmaOrd2544 : /MR 55/.test(ref) ? SOURCES.mr55 : /Plan/.test(ref) ? SOURCES.plan2556 : null;
   return src ? `<a class="ref" href="${src.url}" target="_blank" rel="noopener" title="${esc(src.title)}">${esc(ref)}</a>` : `<span class="ref">${esc(ref)}</span>`;
 }
 
-function renderPanel() {
-  const keep = panel.scrollTop;
-  renderPanelInner();
-  panel.scrollTop = keep;
-}
-function renderPanelInner() {
-  const L = last;
-  const head = `
-    <header class="brand">
-      <div class="mark" aria-hidden="true"></div>
-      <div><h1>Plot Envelope</h1><p>What can you build on a Bangkok plot? Zone ย.10 (Y.10), high-density residential.</p></div>
-    </header>`;
-  if (st.drawing || !L) {
-    panel.innerHTML = head + `
+const HEAD = `
+  <header class="brand">
+    <div class="mark" aria-hidden="true"></div>
+    <div><h1>Plot Envelope</h1><p>What can you build on a Bangkok plot? Zone ย.10 (Y.10), high-density residential.</p></div>
+  </header>`;
+
+let shellMode: 'draw' | 'main' | '' = '';
+let floorsOpen = false;
+
+function buildShell(mode: 'draw' | 'main') {
+  shellMode = mode;
+  if (mode === 'draw') {
+    panel.innerHTML = HEAD + `
       <section class="card focus">
         <h2>Draw your plot</h2>
-        <p class="muted">Click on the map to place each corner. Click the first corner again to close the shape. Any shape works. Brown hatched areas are zone Y.10.</p>
-        <div class="row"><button class="btn ghost" id="cancelDraw">Cancel</button></div>
+        <p class="muted">Click on the map to place each corner. Click the first corner again to close the shape. Any shape works. Zone Y.10 is shaded brown.</p>
+        <div class="row"><button class="btn ghost" data-act="cancel">Cancel</button></div>
       </section>`;
-    panel.querySelector('#cancelDraw')?.addEventListener('click', () => { st.drawing = false; loadRingIntoDraw(); update(); });
     return;
   }
-  const { inp, ds, zoneName, station } = L;
-  const lim = limits(inp);
-  const d = ds.find((x) => x.id === st.selected)!;
-  const frontage = inp.roadEdges.reduce((s, i) => { const a = inp.plot[i], b = inp.plot[(i + 1) % inp.plot.length]; return s + Math.hypot(b[0] - a[0], b[1] - a[1]); }, 0);
-  const inZone = inp.inZoneShare > 0.99;
-  const rules = applicableRules(inp);
-  const passCount = ds.filter((x) => x.pass).length;
-
-  panel.innerHTML = head + `
+  panel.innerHTML = HEAD + `
     <section class="card">
       <div class="cardhead"><h2>1 · Plot</h2>
-        <div class="btns"><button class="btn small" id="redraw">Draw new plot</button><button class="btn small ghost" id="reset">Sample plot</button></div></div>
-      <div class="stats">
-        <div><b>${fmt(lim.A, 0)} m²</b><span>${thaiArea(lim.A)}</span></div>
-        <div><b class="${inZone ? 'ok' : 'bad'}">${inZone ? '✓ ' : '✗ '}${esc(zoneName ? latinZone(zoneName) : 'No zone')}</b><span>${inZone ? `inside zone Y.10 · ${esc(zoneName)}` : `${fmt(inp.inZoneShare * 100, 0)}% in Y.10: out of scope`}</span></div>
-        <div><b>${fmt(station.d, 0)} m</b><span>to ${esc(station.name)} station${inp.nearStation ? ' (≤ 500 m)' : ''}</span></div>
-      </div>
+        <div class="btns"><button class="btn small" data-act="redraw">Draw new plot</button><button class="btn small ghost" data-act="reset">Sample plot</button></div></div>
+      <div class="stats" id="plotStats"></div>
       <p class="hint">Drag the corners to reshape. Drag a mid-point to add a corner. Select a corner and press Delete to remove it.</p>
     </section>
 
@@ -465,20 +438,62 @@ function renderPanelInner() {
       <div class="cardhead"><h2>2 · Road</h2></div>
       <p class="hint">Click a plot edge on the map to mark it as road frontage (orange).</p>
       <label class="field"><span>Road width (right of way)</span>
-        <div class="inline"><input type="range" id="rw" min="4" max="40" step="0.5" value="${st.roadWidth}"><output>${fmt(st.roadWidth)} m</output></div></label>
-      <div class="chips">${[6, 8, 10, 12, 16, 20, 30].map((w) => `<button class="chip ${st.roadWidth === w ? 'on' : ''}" data-w="${w}">${w} m</button>`).join('')}</div>
-      <p class="kv">Frontage <b>${fmt(frontage)} m</b> on ${inp.roadEdges.length} edge${inp.roadEdges.length === 1 ? '' : 's'} · Road setback <b>${fmt(roadSetback(st.roadWidth).d, 2)} m</b></p>
-      ${inp.roadEdges.length ? '' : '<p class="warn">No road edge is marked. Height limits are measured from the road, so click the edge that faces it.</p>'}
+        <div class="inline"><input type="range" id="rw" min="4" max="40" step="0.5" value="${st.roadWidth}" aria-label="Road width in metres"><output id="rwOut"></output></div></label>
+      <div class="chips">${[6, 8, 10, 12, 16, 20, 30].map((w) => `<button class="chip" data-w="${w}">${w} m</button>`).join('')}</div>
+      <p class="kv" id="roadKv"></p>
+      <div id="roadWarn"></div>
     </section>
 
     <section class="card">
       <div class="cardhead"><h2>3 · Building type</h2></div>
-      <div class="seg">${(Object.keys(TYPES) as BuildingType[]).map((t) => `<button class="${st.type === t ? 'on' : ''}" data-type="${t}">${TYPES[t].label}</button>`).join('')}</div>
-      <p class="hint">${esc(TYPES[st.type].note)}</p>
+      <div class="seg" role="group" aria-label="Building type">${(Object.keys(TYPES) as BuildingType[]).map((t) => `<button data-type="${t}">${TYPES[t].label}</button>`).join('')}</div>
+      <p class="hint" id="typeNote"></p>
       <label class="field"><span>FAR bonus (affordable units, public space, rain tanks, green building), capped at +20%</span>
-        <select id="bonus">${[0, 0.05, 0.1, 0.15, 0.2].map((b) => `<option value="${b}" ${st.farBonus === b ? 'selected' : ''}>${b ? '+' + b * 100 + '%' : 'None'}</option>`).join('')}</select></label>
+        <select id="bonus">${[0, 0.05, 0.1, 0.15, 0.2].map((b) => `<option value="${b}">${b ? '+' + b * 100 + '%' : 'None'}</option>`).join('')}</select></label>
     </section>
 
+    <div id="results"></div>`;
+}
+
+function syncControls() {
+  const rw = $<HTMLInputElement>('rw');
+  if (rw && document.activeElement !== rw) rw.value = String(st.roadWidth);
+  const out = $('rwOut'); if (out) out.textContent = `${fmt(st.roadWidth)} m`;
+  panel.querySelectorAll<HTMLElement>('[data-w]').forEach((b) => b.classList.toggle('on', Number(b.dataset.w) === st.roadWidth));
+  panel.querySelectorAll<HTMLElement>('[data-type]').forEach((b) => b.classList.toggle('on', b.dataset.type === st.type));
+  const bonus = $<HTMLSelectElement>('bonus'); if (bonus) bonus.value = String(st.farBonus);
+}
+
+function renderPanel() {
+  const mode = st.drawing || !last ? 'draw' : 'main';
+  if (mode !== shellMode) buildShell(mode);
+  if (mode === 'draw') return;
+  const keep = panel.scrollTop;
+  syncControls();
+  renderResults();
+  panel.scrollTop = keep;
+}
+
+function renderResults() {
+  const { inp, ds, zoneName, station } = last!;
+  const lim = limits(inp);
+  const d = ds.find((x) => x.id === st.selected)!;
+  const frontage = frontageRun(inp);
+  const inZone = inp.inZoneShare > 0.99;
+  const rules = applicableRules(inp);
+  const passCount = ds.filter((x) => x.pass).length;
+
+  $('plotStats')!.innerHTML = `
+    <div><b>${fmt(lim.A, 0)} m²</b><span>${thaiArea(lim.A)}</span></div>
+    <div><b class="${inZone ? 'ok' : 'bad'}">${inZone ? '✓ ' : '✗ '}${esc(zoneName ? latinZone(zoneName) : 'No zone')}</b><span>${inZone ? `inside zone Y.10 · ${esc(zoneName)}` : `${fmt(inp.inZoneShare * 100, 0)}% in Y.10: out of scope`}</span></div>
+    <div><b>${fmt(station.d, 0)} m</b><span>to ${esc(station.name)} station${inp.nearStation ? ' (≤ 500 m)' : ''}</span></div>`;
+  $('roadKv')!.innerHTML = `Frontage <b>${fmt(frontage)} m</b> on ${inp.roadEdges.length} edge${inp.roadEdges.length === 1 ? '' : 's'} · Road setback <b>${fmt(roadSetback(st.roadWidth).d, 2)} m</b>`;
+  $('roadWarn')!.innerHTML = inp.roadEdges.length ? '' : '<p class="warn">No road edge is marked. Height limits are measured from the road, so click the edge that faces it.</p>';
+  $('typeNote')!.textContent = TYPES[st.type].note;
+
+  let run = 0;
+  const floorRows = d.floors.map((f) => { run += f.area; return `<tr><td>${f.n}</td><td>${fmt(f.z0)}–${fmt(f.z1)}</td><td>${fmt(f.area, 1)}</td><td>${fmt(run, 0)}</td></tr>`; }).join('');
+  $('results')!.innerHTML = `
     <section class="card">
       <div class="cardhead"><h2>4 · Rules that apply</h2></div>
       <ul class="rules">${rules.map((r) => `<li><div class="rl">${esc(r.label)}</div><div class="rv">${esc(r.value)}</div>${refLink(r.ref)}</li>`).join('')}</ul>
@@ -486,7 +501,7 @@ function renderPanelInner() {
 
     <section class="card">
       <div class="cardhead"><h2>5 · Allowed space</h2></div>
-      <div class="seg">
+      <div class="seg" role="group" aria-label="Envelope">
         <button class="${st.envelope === 'low' ? 'on' : ''}" data-env="low">Below 23 m</button>
         <button class="${st.envelope === 'high' ? 'on' : ''}" data-env="high">High-rise</button>
         <button class="${st.envelope === 'none' ? 'on' : ''}" data-env="none">Hide</button>
@@ -509,14 +524,14 @@ function renderPanelInner() {
           <div><b>${fmt(lim.A ? (d.footprint / lim.A) * 100 : 0, 0)}%</b><span>coverage</span></div>
           <div><b>${fmt(d.openSpace, 0)}</b><span>m² open space</span></div>
         </div>
-        <p class="kv">${esc(d.units ?? '')}</p>
+        <p class="kv">${esc(d.units ?? '')} · ${fmt(d.planted, 0)} m² of the open space kept as planted, permeable ground (≥ 50%, plan cl. 17(2)): a design allowance, not drawn.</p>
         <table class="checks"><thead><tr><th></th><th>Check</th><th>Required</th><th>This design</th></tr></thead><tbody>
           ${d.checks.map((c) => `<tr class="${c.pass ? '' : 'fail'}"><td class="ic">${c.pass ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'}</td><td>${esc(c.label)}<div>${refLink(c.ref)}${c.note ? ` <span class="muted small">${esc(c.note)}</span>` : ''}</div></td><td>${esc(c.required)}</td><td>${esc(c.actual)}</td></tr>`).join('')}
         </tbody></table>
-        <details class="floors"><summary>Floor-by-floor areas (${d.floors.length} floors)</summary>
+        <details class="floors" ${floorsOpen ? 'open' : ''}><summary>Floor-by-floor areas (${d.floors.length} floors)</summary>
           <table><thead><tr><th>Floor</th><th>Level (m)</th><th>Area m²</th><th>Running total</th></tr></thead><tbody>
-          ${(() => { let run = 0; return d.floors.map((f) => { run += f.area; return `<tr><td>${f.n}</td><td>${fmt(f.z0)}–${fmt(f.z1)}</td><td>${fmt(f.area, 1)}</td><td>${fmt(run, 0)}</td></tr>`; }).join(''); })()}
-          <tr class="tot"><td colspan="2">Total</td><td>${fmt(d.gfa, 1)}</td><td>FAR ${fmt(d.far, 3)}</td></tr></tbody></table>
+          ${floorRows}
+          <tr class="tot"><td colspan="2">Total = Σ floors</td><td>${fmt(d.gfa, 1)}</td><td>FAR ${fmt(d.far, 3)}</td></tr></tbody></table>
         </details>
       </div>
     </section>
@@ -526,39 +541,49 @@ function renderPanelInner() {
       <p class="muted small">Rules come from the Bangkok Comprehensive Plan B.E. 2556 (2013, still in force; the 2026 draft is not law yet), the Bangkok Building Control Ordinance 2544, and Ministerial Regulation 33. Zone boundaries come from the BMA City Planning GIS. Neighbouring buildings and roads come from OpenStreetMap, and only about 1 in 10 buildings has a mapped height. Station distance is measured from the station point, not the platform edge. Not modelled: airport and heritage height controls, parking, EIA. This is a feasibility sketch, not a permit check.</p>
       <ul class="srcs">${Object.values(SOURCES).map((s) => `<li><a href="${s.url}" target="_blank" rel="noopener">${esc(s.title)}</a></li>`).join('')}</ul>
     </section>`;
-
-  panel.querySelector('#redraw')!.addEventListener('click', startDrawing);
-  panel.querySelector('#reset')!.addEventListener('click', () => {
-    st.ring = SAMPLE; st.roadSegs = [[SAMPLE[0], SAMPLE[1]]]; st.roadWidth = 12;
-    loadRingIntoDraw(); update();
-    map.easeTo({ center: [100.57274, 13.73893], zoom: 18.15, pitch: 62, bearing: -35 });
-  });
-  const rw = panel.querySelector<HTMLInputElement>('#rw')!;
-  rw.addEventListener('input', () => { st.roadWidth = Number(rw.value); rw.nextElementSibling!.textContent = `${fmt(st.roadWidth)} m`; scheduleUpdate(); });
-  panel.querySelectorAll<HTMLButtonElement>('[data-w]').forEach((b) => b.addEventListener('click', () => { st.roadWidth = Number(b.dataset.w); update(); }));
-  panel.querySelectorAll<HTMLButtonElement>('[data-type]').forEach((b) => b.addEventListener('click', () => { st.type = b.dataset.type as BuildingType; update(); }));
-  panel.querySelector<HTMLSelectElement>('#bonus')!.addEventListener('change', (e) => { st.farBonus = Number((e.target as HTMLSelectElement).value); update(); });
-  panel.querySelectorAll<HTMLButtonElement>('[data-env]').forEach((b) => b.addEventListener('click', () => { st.envelope = b.dataset.env as State['envelope']; update(); }));
-  panel.querySelectorAll<HTMLButtonElement>('[data-design]').forEach((b) => b.addEventListener('click', () => {
-    st.selected = b.dataset.design!;
-    const dd = last!.ds.find((x) => x.id === st.selected)!;
-    if (st.envelope !== 'none') st.envelope = dd.regime;
-    update();
-  }));
   renderLegend(d);
 }
+
+// One set of delegated listeners for the whole panel.
+panel.addEventListener('click', (e) => {
+  const el = (e.target as HTMLElement).closest<HTMLElement>('button');
+  if (!el) return;
+  const act = el.dataset.act;
+  if (act === 'redraw') return startDrawing();
+  if (act === 'cancel') { st.drawing = false; loadRingIntoDraw(); return update(); }
+  if (act === 'reset') {
+    st.ring = SAMPLE; st.roadIdx = [0]; st.roadWidth = 12; pickBest = true;
+    loadRingIntoDraw(); update();
+    map.easeTo({ center: [100.57274, 13.73893], zoom: 18.15, pitch: 62, bearing: -35 });
+    return;
+  }
+  if (el.dataset.w) { st.roadWidth = Number(el.dataset.w); return update(); }
+  if (el.dataset.type) { st.type = el.dataset.type as BuildingType; return update(); }
+  if (el.dataset.env) { st.envelope = el.dataset.env as State['envelope']; return update(); }
+  if (el.dataset.design) {
+    st.selected = el.dataset.design;
+    const dd = last!.ds.find((x) => x.id === st.selected)!;
+    if (st.envelope !== 'none') st.envelope = dd.regime;
+    return update();
+  }
+});
+panel.addEventListener('input', (e) => {
+  const t = e.target as HTMLInputElement;
+  if (t.id === 'rw') { st.roadWidth = Number(t.value); scheduleUpdate(); }
+});
+panel.addEventListener('change', (e) => {
+  const t = e.target as HTMLSelectElement;
+  if (t.id === 'bonus') { st.farBonus = Number(t.value); update(); }
+});
+panel.addEventListener('toggle', (e) => {
+  const t = e.target as HTMLDetailsElement;
+  if (t.classList?.contains('floors')) floorsOpen = t.open;
+}, true);
 
 let sched = 0;
 function scheduleUpdate() {
   if (sched) return;
-  sched = requestAnimationFrame(() => { sched = 0; updateKeepPanelFocus(); });
-}
-function updateKeepPanelFocus() {
-  const active = document.activeElement?.id;
-  const scroll = panel.scrollTop;
-  update();
-  panel.scrollTop = scroll;
-  if (active) (document.getElementById(active) as HTMLElement | null)?.focus();
+  sched = requestAnimationFrame(() => { sched = 0; update(); });
 }
 
 function renderLegend(d: Design) {
@@ -566,9 +591,20 @@ function renderLegend(d: Design) {
   el.innerHTML = `
     <div class="lg"><i class="sw road"></i>Road frontage</div>
     <div class="lg"><i class="sw base"></i>Footprint limit</div>
-    <div class="lg"><i class="sw ${st.envelope === 'low' ? 'envl' : 'envh'}"></i>Allowed space</div>
+    ${st.envelope === 'none' ? '' : `<div class="lg"><i class="sw ${st.envelope === 'low' ? 'envl' : 'envh'}"></i>Allowed space (${st.envelope === 'low' ? 'below 23 m' : 'high-rise'})</div>`}
     <div class="lg"><i class="sw ${d.pass ? 'des' : 'desbad'}"></i>Design ${d.id}: ${d.pass ? 'passes' : 'fails'}</div>`;
 }
 
 // Show results straight away; the map layers fill in once the style has loaded.
 update();
+
+// Read-only hook for automated browser tests: plot corners in screen pixels and current results.
+(window as unknown as { __envelope: unknown }).__envelope = {
+  corners: () => st.ring.map((p) => { const q = map.project(p as [number, number]); return [q.x, q.y]; }),
+  buildings: () => {
+    const fs = map.queryRenderedFeatures({ layers: ['building-3d'] });
+    const ids = fs.map((f) => f.id);
+    return { n: fs.length, distinct: new Set(ids).size, undef: ids.filter((x) => x === undefined).length, sample: ids.slice(0, 8), filter: map.getFilter('building-3d') };
+  },
+  state: () => ({ roadIdx: st.roadIdx, n: st.ring.length, selected: st.selected, pass: last?.ds.map((d) => `${d.id}:${d.pass}`) }),
+};

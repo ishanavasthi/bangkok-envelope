@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { area, type Pt } from './poly';
-import { baseFootprint, designs, envelope, roadSetback, type Input } from './model';
+import { baseFootprint, designs, envelope, frontageRun, roadSetback, type Input } from './model';
 
 const rect = (w: number, d: number): Pt[] => [[0, 0], [w, 0], [w, d], [0, d]];
 // Arc cuts are grown 4 cm to stay conservative, so exact rectangles come out
@@ -106,5 +106,19 @@ describe('building type changes the rules', () => {
     const c = designs(base(rect(40, 50)))[0];
     const o = designs(base(rect(40, 50), { type: 'office' }))[0];
     expect(o.footprint).toBeGreaterThan(c.footprint);
+  });
+});
+
+describe('frontage and practical plate', () => {
+  it('a road edge split by an extra corner still counts as one 40 m frontage', () => {
+    const plot: Pt[] = [[0, 0], [20, 0], [40, 0], [40, 50], [0, 50]];
+    expect(frontageRun(base(plot, { roadEdges: [0, 1] }))).toBeCloseTo(40);
+    const b = designs(base(plot, { roadEdges: [0, 1] }))[1];
+    expect(b.checks.find((c) => c.id === 'front')?.pass).toBe(true);
+  });
+  it('a 20 x 30 m plot cannot carry a practical tower', () => {
+    const b = designs(base(rect(20, 30), { roadWidth: 20 }))[1];
+    expect(b.checks.find((c) => c.id === 'plate')?.pass).toBe(false);
+    expect(b.pass).toBe(false);
   });
 });

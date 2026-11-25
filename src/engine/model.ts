@@ -45,6 +45,25 @@ export const TYPES: Record<BuildingType, { label: string; residential: boolean; 
   hotel: { label: 'Hotel', residential: false, f2f: 3.3, note: 'Non-residential: 10% open; over 80 rooms needs a 12 m road or a station within 500 m (plan 17(8)).' },
 };
 export const HOTEL_M2_PER_KEY = 45;
+/** Practical minimum floor plates (not law): a tower needs lifts, two fire stairs and units around them. */
+export const MIN_PLATE_TOWER = 300;
+export const MIN_PLATE_LOW = 120;
+
+/** Longest continuous run of road-facing edges (MR 33 cl. 2 asks for one side of the land ≥ 12 m). */
+export function frontageRun(inp: Input): number {
+  const es = edges(inp);
+  const n = es.length;
+  if (!es.some((e) => e.road)) return 0;
+  if (es.every((e) => e.road)) return es.reduce((s, e) => s + e.len, 0);
+  let best = 0;
+  for (let i = 0; i < n; i++) {
+    if (!es[i].road || es[(i - 1 + n) % n].road) continue; // start of a run
+    let run = 0;
+    for (let k = i; es[k % n].road && k < i + n; k++) run += es[k % n].len;
+    best = Math.max(best, run);
+  }
+  return best;
+}
 
 /** BMA building ordinance 2544, clause 50 paragraph 2: road setback from the plot's road boundary. */
 export function roadSetback(w: number): { d: number; rule: string } {
@@ -225,7 +244,9 @@ export function evaluate(inp: Input, spec: Spec, floors: Floor[]): Design {
   // Height plane, checked on every vertex of every floor at its roof level.
   let worst = Infinity;
   if (inp.roadEdges.length) for (const f of floors) for (const r of f.rings) for (const p of r) worst = Math.min(worst, maxHeightAt(inp, p) - f.z1);
-  const frontage = es.filter((e) => e.road).reduce((m, e) => Math.max(m, e.len), 0);
+  const frontage = frontageRun(inp);
+  const plate = floors.reduce((m, f) => Math.max(m, f.area), 0);
+  const minPlate = isHigh ? MIN_PLATE_TOWER : MIN_PLATE_LOW;
   const needRoad = gfa > 30000 ? 18 : 10;
   const tol = 0.02;
   const checks: Check[] = [];
@@ -245,7 +266,6 @@ export function evaluate(inp: Input, spec: Spec, floors: Floor[]): Design {
   add({ id: 'far', label: 'Floor area ratio', required: `≤ ${fmt(farEff, 2)} (${fmt(farEff * A, 0)} m²)`, actual: `${fmt(gfa / A, 2)} (${fmt(gfa, 0)} m²)`, pass: gfa <= farEff * A + 0.5, ref: inp.farBonus > 0 ? 'Plan 2556 cl. 17(1) + bonus cl. 51–57' : 'Plan 2556 cl. 17(1)' });
   add({ id: 'open', label: `Open space ≥ ${openRatio * 100}% of plot`, required: `≥ ${fmt(openRatio * A, 0)} m²`, actual: `${fmt(openSpace, 0)} m² (${fmt((openSpace / A) * 100, 0)}%)`, pass: openSpace >= openRatio * A - 0.5, ref: `BMA ord. 2544 cl. 52(${t.residential ? 1 : 2})` });
   add({ id: 'osr', label: 'Open space ratio (OSR) ≥ 4% of floor area', required: `≥ ${fmt(ZONE.osr * gfa, 0)} m²`, actual: `${fmt(gfa ? (openSpace / gfa) * 100 : 0, 1)}%`, pass: openSpace >= ZONE.osr * gfa - 0.5, ref: 'Plan 2556 cl. 17(2)' });
-  add({ id: 'perm', label: 'Planted, permeable ground ≥ 50% of open space', required: `≥ ${fmt(openSpace * 0.5, 0)} m²`, actual: `${fmt(planted, 0)} m² allocated`, pass: true, ref: 'Plan 2556 cl. 17(2)', note: 'Allocated by the design; landscaping not drawn.' });
   add({ id: 'class', label: 'Building class', required: 'High-rise if ≥ 23 m or ≥ 10,000 m²', actual: isHigh ? `High-rise / extra-large (${fmt(height)} m, ${fmt(gfa, 0)} m²)` : `Below high-rise (${fmt(height)} m, ${fmt(gfa, 0)} m²)`, pass: true, ref: 'MR 33 cl. 1' });
   add({ id: 'road', label: 'Setback from road edge', required: `≥ ${fmt(reqRoad, 2)} m`, actual: Number.isFinite(minRoad) ? `${fmt(minRoad, 2)} m` : '–', pass: !floors.length || minRoad >= reqRoad - tol, ref: isHigh ? 'MR 33 cl. 4; BMA ord. 50' : 'BMA ord. 50' });
   add({ id: 'side', label: 'Setback from neighbour edges', required: `≥ ${fmt(reqSide)} m`, actual: Number.isFinite(minSide) ? `${fmt(minSide, 2)} m` : 'no neighbour edges', pass: !floors.length || minSide >= reqSide - tol, ref: isHigh ? 'MR 33 cl. 4' : 'BMA ord. 54' });
@@ -253,7 +273,7 @@ export function evaluate(inp: Input, spec: Spec, floors: Floor[]): Design {
   if (isHigh) {
     add({ id: 'front', label: 'High-rise needs 12 m frontage on a public road', required: `≥ 12 m on a road ≥ ${needRoad} m wide`, actual: `${fmt(frontage)} m on a ${fmt(inp.roadWidth)} m road`, pass: frontage >= 12 && inp.roadWidth >= needRoad, ref: 'MR 33 cl. 2' });
   }
-  add({ id: 'sum', label: 'Floor areas add up', required: 'Σ floors = total', actual: `${floors.length} floors, ${fmt(gfa, 0)} m²`, pass: floors.length > 0, ref: 'Floor-by-floor table below' });
+  add({ id: 'plate', label: 'Usable floor plate (practical, not legal)', required: `≥ ${fmt(minPlate, 0)} m² for ${isHigh ? 'a tower core + units' : 'a stair core + units'}`, actual: floors.length ? `${fmt(plate, 0)} m² largest floor` : 'No buildable floor fits', pass: floors.length > 0 && plate >= minPlate, ref: 'Design assumption', note: 'Our assumption, not a regulation.' });
   const units = inp.type === 'condo' ? `~${fmt((gfa * 0.75) / 35, 0)} units at 35 m² (75% efficiency)` : inp.type === 'hotel' ? `~${fmt(gfa / HOTEL_M2_PER_KEY, 0)} keys` : `${fmt(gfa * 0.8, 0)} m² net lettable (80%)`;
   return {
     id: spec.id, name: spec.name, summary: spec.summary, regime: spec.regime,
@@ -266,7 +286,7 @@ export function designs(inp: Input): Design[] {
   const specs: Spec[] = [
     { id: 'A', name: 'Mid-rise block', summary: 'Widest legal plate, kept just under 23 m and 10,000 m² to stay out of high-rise rules.', regime: 'low', plateShare: 1 },
     { id: 'B', name: 'Tower', summary: 'High-rise on the largest plate the 6 m setbacks and open-space rules allow, stacked to the FAR limit.', regime: 'high', plateShare: 1 },
-    { id: 'C', name: 'Slender tower + garden', summary: 'Same floor area on a 60% plate: taller, more garden and light.', regime: 'high', plateShare: 0.6 },
+    { id: 'C', name: 'Slender tower + garden', summary: 'A 60% plate: taller, more garden and light. Reaches full FAR only where the height plane leaves room.', regime: 'high', plateShare: 0.6 },
   ];
   const out = specs.map((s) => build(inp, s));
   if (out.filter((d) => d.pass).length < 2) {
