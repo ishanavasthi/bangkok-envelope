@@ -96,11 +96,17 @@ export function setbacksFor(inp: Input, regime: Regime): number[] {
 }
 
 /** Ground footprint the building may occupy in a regime: plot minus a capsule along every edge. */
-export function baseFootprint(inp: Input, regime: Regime): Rings {
+/** Rules that can be switched off in the "what if" view, to show what each one does. Designs always apply all rules. */
+export interface RulesOff { road?: boolean; side?: boolean; plane?: boolean; }
+
+export function baseFootprint(inp: Input, regime: Regime, off: RulesOff = {}): Rings {
   const plot = clean([inp.plot]);
   const sb = setbacksFor(inp, regime);
   const cuts: Rings = [];
-  edges(inp).forEach((e, i) => cuts.push(...capsule(e.a, e.b, sb[i])));
+  edges(inp).forEach((e, i) => {
+    if ((e.road && off.road) || (!e.road && off.side)) return;
+    cuts.push(...capsule(e.a, e.b, sb[i]));
+  });
   return difference(plot, union(cuts));
 }
 
@@ -122,13 +128,14 @@ export function maxHeightAt(inp: Input, p: Pt): number {
 export interface Slice { z0: number; z1: number; rings: Rings; area: number; }
 
 /** The allowed space as horizontal slices. Low-rise is capped below 23 m. */
-export function envelope(inp: Input, regime: Regime, step = 3): Slice[] {
-  const base = baseFootprint(inp, regime);
+export function envelope(inp: Input, regime: Regime, step = 3, off: RulesOff = {}): Slice[] {
+  const base = baseFootprint(inp, regime, off);
   const out: Slice[] = [];
-  const cap = regime === 'low' ? HIGH_RISE_H - 0.01 : 400;
+  // Without the height plane nothing caps a high-rise, so stop the drawing at 150 m.
+  const cap = regime === 'low' ? HIGH_RISE_H - 0.01 : off.plane ? 150 : 400;
   for (let z = 0; z < cap; z += step) {
     const z1 = Math.min(z + step, cap);
-    const r = planeCut(inp, base, z1);
+    const r = off.plane ? base : planeCut(inp, base, z1);
     const a = area(r);
     if (a < 1) break;
     out.push({ z0: z, z1, rings: r, area: a });

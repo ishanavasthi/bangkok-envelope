@@ -9,7 +9,7 @@ Goal: a browser tool for one Bangkok zone (ย.10 / Y.10, high-density residenti
 - Vite + TypeScript, no framework (small UI, fast load).
 - MapLibre GL JS + OpenFreeMap vector tiles (free, no key): real roads and OSM buildings extruded by height.
 - terra-draw for drawing and editing the plot polygon on the map.
-- clipper2-js for robust polygon offset and boolean operations, in a local metric frame (equirectangular around the plot centroid, error < 0.1% at plot scale).
+- Clipper (clipper-lib 6.4.2) for polygon offset and boolean operations on integer millimetres, in a local metric frame (equirectangular around the plot centroid, error < 0.1% at plot scale). clipper2-js was tried first and dropped (see DECISIONS.md).
 - Everything is client-side: static deploy on Vercel.
 
 ## Geometry engine (pure module, unit-tested)

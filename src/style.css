@@ -137,3 +137,9 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .stats.four { grid-template-columns: repeat(2, 1fr); }
   #legend { bottom: 8px; left: 8px; font-size: 11px; padding: 6px 8px; }
 }
+
+.whatif { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-top: 10px; font-size: 12.5px; }
+.whatif > span { width: 100%; color: var(--ink-2); font-size: 12px; }
+.tog { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.tog input { accent-color: var(--brand-2); }
+@media (max-width: 860px) { #legend { top: 8px; bottom: auto; } }

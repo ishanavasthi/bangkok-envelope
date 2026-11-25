@@ -10,7 +10,7 @@ import { remapRoad } from './engine/road';
 import { area, intersect, offset, pointInRing, segDist, toPolygons, type Pt, type Rings } from './engine/poly';
 import {
   applicableRules, baseFootprint, designs, envelope, fmt, frontageRun, limits, roadSetback, TYPES,
-  type BuildingType, type Design, type Input, type Regime,
+  type BuildingType, type Design, type Input, type Regime, type RulesOff,
 } from './engine/model';
 import zoneY10 from './data/zone-y10.geojson?raw';
 import zonesCtx from './data/zones-context.geojson?raw';
@@ -38,6 +38,7 @@ interface State {
   envelope: Regime | 'none';
   selected: string;
   drawing: boolean;
+  off: RulesOff;
 }
 const st: State = {
   ring: SAMPLE,
@@ -48,6 +49,7 @@ const st: State = {
   envelope: 'high',
   selected: 'B',
   drawing: false,
+  off: {},
 };
 
 // ---------- map ----------
@@ -83,7 +85,7 @@ map.on('load', () => {
   const below = map.getLayer('building-3d') ? 'building-3d' : undefined;
   map.addLayer({ id: 'zones-fill', type: 'fill', source: 'zones', paint: {
     'fill-color': ['case', ['==', ['get', 'LUP_ZONE'], 'ย.๑๐'], '#a0663a', 'rgba(0,0,0,0)'],
-    'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.22, 16, 0.07],
+    'fill-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.28, 15.5, 0.2, 17.5, 0.06],
   } }, below);
   map.addLayer({ id: 'zones-line', type: 'line', source: 'zones', paint: {
     'line-color': ['case', ['==', ['get', 'LUP_ZONE'], 'ย.๑๐'], '#8a5128', '#9aa0a6'],
@@ -293,6 +295,12 @@ function nearestStation(c: LngLat) {
   return best;
 }
 
+const ZONE_AREAS = ZONE.features.map((f) => {
+  const pts = (f.geometry.type === 'Polygon' ? f.geometry.coordinates : (f.geometry as GeoJSON.MultiPolygon).coordinates.flat()).flat() as LngLat[];
+  const c = centroid(pts);
+  return { code: String(f.properties!.LUP_SUBZONE), near: nearestStation(c).name, km2: Number(f.properties!.SHAPE_Area) / 1e6, n: Number(String(f.properties!.LUP_SUBZONE).replace(/[^๐-๙]/g, '').split('').map((d) => '๐๑๒๓๔๕๖๗๘๙'.indexOf(d)).join('').slice(2) || 0) };
+}).sort((a, b) => a.n - b.n);
+
 function update() {
   const ring = st.ring;
   if (st.drawing || ring.length < 3) {
@@ -346,12 +354,12 @@ function drawMap(inp: Input, frame: Frame, ds: Design[]) {
   const d = ds.find((x) => x.id === st.selected)!;
   const ground: GeoJSON.Feature[] = [...ringsToFeatures([inp.plot], frame, { kind: 'plot' })];
   const regime: Regime = st.envelope === 'none' ? d.regime : st.envelope;
-  ground.push(...ringsToFeatures(baseFootprint(inp, regime), frame, { kind: 'base' }));
+  ground.push(...ringsToFeatures(baseFootprint(inp, regime, st.off), frame, { kind: 'base' }));
   setData('ground', { type: 'FeatureCollection', features: ground });
 
   const envFeats: GeoJSON.Feature[] = [];
   if (st.envelope !== 'none') {
-    const env = envelope(inp, st.envelope, 3);
+    const env = envelope(inp, st.envelope, 3, st.off);
     for (const s of env) envFeats.push(...ringsToFeatures(s.rings, frame, { base: s.z0, top: s.z1, color: st.envelope === 'high' ? '#2b8cbe' : '#41ab5d' }));
   }
   setData('env', { type: 'FeatureCollection', features: envFeats });
@@ -432,6 +440,8 @@ function buildShell(mode: 'draw' | 'main') {
         <div class="btns"><button class="btn small" data-act="redraw">Draw new plot</button><button class="btn small ghost" data-act="reset">Sample plot</button></div></div>
       <div class="stats" id="plotStats"></div>
       <p class="hint">Drag the corners to reshape. Drag a mid-point to add a corner. Select a corner and press Delete to remove it.</p>
+      <label class="field"><span>Find a Y.10 area to draw in</span>
+        <select id="goto"><option value="">Jump to a Y.10 area…</option>${ZONE_AREAS.map((z) => `<option value="${esc(z.code)}">${esc(latinZone(z.code))} · near ${esc(z.near)} · ${fmt(z.km2, 2)} km²</option>`).join('')}</select></label>
     </section>
 
     <section class="card">
@@ -506,6 +516,9 @@ function renderResults() {
         <button class="${st.envelope === 'high' ? 'on' : ''}" data-env="high">High-rise</button>
         <button class="${st.envelope === 'none' ? 'on' : ''}" data-env="none">Hide</button>
       </div>
+      ${st.envelope === 'none' ? '' : `<div class="whatif"><span>What if a rule didn't exist?</span>
+        ${([['road', 'Road setback'], ['side', 'Neighbour setback'], ['plane', '2:1 height plane']] as [keyof RulesOff, string][]).map(([k, l]) => `<label class="tog"><input type="checkbox" data-off="${k}" ${st.off[k] ? '' : 'checked'}> ${l}</label>`).join('')}
+      </div>${Object.values(st.off).some(Boolean) ? '<p class="warn">Showing a what-if envelope with a rule switched off. This is not legal. The designs below still apply every rule.</p>' : ''}`}
       <p class="hint">${st.envelope === 'low' ? 'Green volume: below 23 m and 10,000 m², setbacks are 3 m from neighbours (ord. 54) plus the road setback.' : st.envelope === 'high' ? 'Blue volume: once a building is 23 m+ or 10,000 m²+, it must stay 6 m from every edge (MR 33). The top steps back from the road under the 2:1 height plane (ord. 49).' : 'Envelope hidden.'} The dashed line on the ground is the footprint limit.</p>
     </section>
 
@@ -572,8 +585,17 @@ panel.addEventListener('input', (e) => {
   if (t.id === 'rw') { st.roadWidth = Number(t.value); scheduleUpdate(); }
 });
 panel.addEventListener('change', (e) => {
-  const t = e.target as HTMLSelectElement;
+  const t = e.target as HTMLSelectElement & HTMLInputElement;
   if (t.id === 'bonus') { st.farBonus = Number(t.value); update(); }
+  if (t.dataset.off) { st.off = { ...st.off, [t.dataset.off]: !t.checked }; update(); }
+  if (t.id === 'goto' && t.value) {
+    const z = ZONE.features.find((f) => f.properties!.LUP_SUBZONE === t.value)!;
+    const pts = (z.geometry.type === 'Polygon' ? z.geometry.coordinates : (z.geometry as GeoJSON.MultiPolygon).coordinates.flat()).flat() as LngLat[];
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    map.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 40, pitch: 45, duration: 1200 });
+    t.value = '';
+    startDrawing(); // the user came here to draw a plot
+  }
 });
 panel.addEventListener('toggle', (e) => {
   const t = e.target as HTMLDetailsElement;

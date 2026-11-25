@@ -11,6 +11,20 @@ These are working notes for Ishan's write-up. Each entry records a call that was
 5. **The high-rise threshold creates two regimes.** At 23 m or 10,000 m², the whole building must be 6 m from every boundary (MR 33, clause 4) and needs 12 m frontage on a road ≥ 10 m wide (MR 33, clause 2). There is a discontinuity: on a narrow road, the best legal design may be a mid-rise just under 23 m.
 6. **Data anomalies in the official GIS layer.** One พ.3 polygon carries FAR 8 / OSR 4 and one ย.9 carries FAR 6 / OSR 5, which don't match the law text for those zones. All 13 Y.10 sub-areas match the law (FAR 8, OSR 4). We take rule values from the gazette text, not the GIS attributes.
 
+7. **Large buildings and road width.** I checked whether Bangkok ties "large buildings" (อาคารขนาดใหญ่: over 2,000 m², or 15 m and over 1,000 m²) to a minimum road width. Searching every clause that uses the term in the BMA ordinance and MR 55 found only fire, water, parking and structure rules. So the only road-access minimum we enforce is MR 33's 12 m frontage on a road ≥ 10 m (≥ 18 m above 30,000 m²) for high-rise and extra-large buildings.
+
+## Engineering calls (and what broke)
+
+- **Geometry library.** I started with clipper2-js. Its open-path offset halves the width without saying so, and its closed-polygon inset returned shifted, wrong shapes for a plain 40×50 rectangle; a unit test caught it. I switched to clipper-lib, the long-established JS port of Clipper 6.4.2. All tests then passed unchanged.
+- **Arc tolerance.** Rounded corners are polygonised with a 4 cm chord tolerance, and the cut radius is grown by the same 4 cm. A polygonised arc's chords sit inside the true circle, so without this a design could end up 1–4 cm inside a setback and fail its own check. The setbacks are therefore conservative by up to 4 cm. The tests allow 1% on exact hand areas.
+- **Inset search.** Shrinking a footprint to a target area used bisection, about 20 offsets of a many-vertex shape, which took 6 s on a star-shaped plot. Newton steps using the perimeter now converge in 3–5 offsets. It first stalled a hair above the target because of millimetre rounding; it now aims half a tolerance under.
+- **Mid-rise plate.** On big plots the 10,000 m² extra-large threshold let the mid-rise use its whole floor-area budget on one huge floor. The plate is now capped at budget ÷ floors-that-fit-under-23 m.
+- **Practical plate.** On a 20×30 m plot the high-rise rules leave a plate of about 144 m². That is legal, but no tower core fits. Towers now need a ≥ 300 m² plate, low-rise ≥ 120 m². This check is labelled practical, not legal.
+- **Frontage.** MR 33 asks for one side of the land ≥ 12 m on the road. If a corner is added on the road edge, the frontage becomes two edges, so the check measures the longest continuous run of road edges, not the longest single edge.
+- **Road marking through edits.** Road edges are kept by index and remapped when a corner is added (both halves stay road) or deleted (the merged edge is road if either was). This is unit-tested.
+- **Neighbour buildings on the plot.** Map tile building ids are not unique: one id covered about 20 buildings around Soi 39, and hiding it emptied the block. The tool now hides by geometry instead, with a MapLibre `within` filter against the plot grown by 2 m.
+- **Permeable ground** (≥ 50% of open space) is shown as a design allowance, not a pass/fail row, because the tool doesn't draw landscaping.
+
 ## Scope calls
 
 - **Zone: ย.10 (Y.10).** It is the condo zone, covering 13 sub-areas, about 13 km² of the inner city: Sukhumvit/Asok/Phrom Phong, Sathorn, Phaya Thai and Ari. It has dense OSM coverage, and condo use is unrestricted there. The plan's FAR ceiling here (8) is below MR 33's absolute 10:1, so the zone rule binds.
