@@ -1,0 +1,149 @@
+{
+  "zone": {
+    "code": "ย.10",
+    "codeLatin": "Y.10",
+    "name": "High-density residential (brown), inner city next to the CBD and mass transit",
+    "plan": "Bangkok Comprehensive Plan B.E. 2556 (2013), 3rd revision, in force",
+    "planNote": "Clause 1 of the plan gives it a 5-year term. It is still in force in Nov 2026: the 4th revision is only a draft (90-day public review Aug 10 - Nov 9, 2026; enforcement expected ~2027).",
+    "sources": ["plan2556", "tccInForce", "nationDraft"]
+  },
+  "sources": {
+    "plan2556": {
+      "title": "กฎกระทรวงให้ใช้บังคับผังเมืองรวมกรุงเทพมหานคร พ.ศ. ๒๕๕๖ (Ministerial Regulation enforcing the Bangkok Comprehensive Plan 2013), Royal Gazette vol. 130 part 41 Kor, 16 May 2013",
+      "url": "https://download.asa.or.th/03media/04law/cpa/mr56-bma-full.pdf"
+    },
+    "plan2556gis": {
+      "title": "BMA City Planning GIS, layer 'แผนผังข้อกำหนดการใช้ประโยชน์ที่ดิน 2556' (zone polygons with FAR/OSR attributes)",
+      "url": "https://cpudgiportal.bangkok.go.th/arcgis/rest/services/ข้อมูลผังเมือง_2556/MapServer/0"
+    },
+    "bmaOrd2544": {
+      "title": "ข้อบัญญัติกรุงเทพมหานคร เรื่อง ควบคุมอาคาร พ.ศ. ๒๕๔๔ (Bangkok Building Control Ordinance 2001)",
+      "url": "https://download.asa.or.th/03media/04law/cba/bb/bb44-03.pdf"
+    },
+    "mr33": {
+      "title": "กฎกระทรวง ฉบับที่ ๓๓ (พ.ศ. ๒๕๓๕) as amended by No. 50 (2540) - high-rise and extra-large buildings",
+      "url": "https://lawplayer.com/th/act/ocs-%E0%B8%840004-2B-0038"
+    },
+    "mr55": {
+      "title": "กฎกระทรวง ฉบับที่ ๕๕ (พ.ศ. ๒๕๔๓) consolidated to No. 68 (2563)",
+      "url": "https://download.asa.or.th/03media/04law/cba/mr/mr43-55-upd68.pdf"
+    },
+    "tccInForce": {
+      "title": "Thailand Consumers Council, 20 Feb 2026: the 2013 Bangkok plan 'remains in force'",
+      "url": "https://tcc.or.th/200269_bkk-plan-sue_news"
+    },
+    "nationDraft": {
+      "title": "The Nation, 10 Nov 2026: 4th revision draft finished its 90-day review (Aug 10 - Nov 9, 2026)",
+      "url": "https://nationthailand.com/business/property/40073336"
+    }
+  },
+  "rules": {
+    "far": {
+      "value": 8,
+      "label": "Floor area ratio (FAR) max 8 : 1",
+      "plain": "Total floor area of all floors of all buildings ≤ 8 × plot area.",
+      "source": "plan2556",
+      "clause": "ข้อ ๑๗ วรรคท้าย (๑) - Y.10 zone",
+      "quoteTh": "มีอัตราส่วนพื้นที่อาคารรวมต่อพื้นที่ดินไม่เกิน ๘ : ๑"
+    },
+    "osr": {
+      "value": 0.04,
+      "label": "Open space ratio (OSR) min 4% of total floor area",
+      "plain": "Uncovered open land ≥ 4% of total floor area, and never less than the Building Control minimum. At least half of that open space must be permeable planted ground.",
+      "source": "plan2556",
+      "clause": "ข้อ ๑๗ วรรคท้าย (๒) - Y.10 zone",
+      "quoteTh": "มีอัตราส่วนของที่ว่างต่อพื้นที่อาคารรวมไม่น้อยกว่าร้อยละสี่ ... และให้มีพื้นที่น้ำซึมผ่านได้เพื่อปลูกต้นไม้ไม่น้อยกว่าร้อยละห้าสิบของพื้นที่ว่าง"
+    },
+    "permeable": {
+      "value": 0.5,
+      "label": "≥ 50% of the open space permeable and planted",
+      "source": "plan2556",
+      "clause": "ข้อ ๑๗ วรรคท้าย (๒)"
+    },
+    "openSpaceResidential": {
+      "value": 0.3,
+      "label": "Residential buildings: open space ≥ 30% of the plot",
+      "plain": "A residential building (a condo counts) must leave at least 30% of the land uncovered, so building coverage ≤ 70%.",
+      "source": "bmaOrd2544",
+      "clause": "ข้อ ๕๒ (๑)",
+      "quoteTh": "อาคารอยู่อาศัย ต้องมีที่ว่างไม่น้อยกว่า 30 ใน 100 ส่วนของพื้นที่ที่ดิน",
+      "note": "MR 55 clause 33 measures the same 30% against the largest floor plate, not the plot. Bangkok's ordinance is the local rule and is stricter for towers, so we use it. MR 33 clause 6(1) also sets 30% of the plot for residential high-rises."
+    },
+    "openSpaceOther": {
+      "value": 0.1,
+      "label": "Non-residential buildings: open space ≥ 10% of the plot",
+      "source": "bmaOrd2544",
+      "clause": "ข้อ ๕๒ (๒); MR 33 ข้อ ๖ (๒)"
+    },
+    "roadSetback": {
+      "label": "Setback from the public road",
+      "plain": "Road < 10 m wide: building line ≥ 6 m from the road centreline. 10-20 m: ≥ 1/10 of road width from the road boundary. > 20 m: ≥ 2 m from the road boundary. (Applies to buildings over 2 storeys / 8 m and to large buildings.)",
+      "source": "bmaOrd2544",
+      "clause": "ข้อ ๕๐ วรรคสอง (๑)-(๓)"
+    },
+    "heightRoadRatio": {
+      "value": 2,
+      "label": "Height at any point ≤ 2 × horizontal distance to the far side of the nearest public road",
+      "plain": "A sloped plane rising from the opposite edge of the road at 2:1. Near a narrow road it cuts the top of the building back in terraces.",
+      "source": "bmaOrd2544",
+      "clause": "ข้อ ๔๙",
+      "quoteTh": "ความสูงของอาคารไม่ว่าจากจุดหนึ่งจุดใด ต้องไม่เกิน 2 เท่าของระยะราบ วัดจากจุดนั้นไปตั้งฉากกับแนวถนนด้านตรงข้ามของถนนสาธารณะที่อยู่ใกล้อาคารนั้นที่สุด",
+      "alsoIn": "MR 55 ข้อ ๔๔"
+    },
+    "highRiseHeight": {
+      "value": 23,
+      "label": "High-rise = 23 m or taller",
+      "source": "mr33",
+      "clause": "ข้อ ๑ definitions (อาคารสูง)"
+    },
+    "extraLargeArea": {
+      "value": 10000,
+      "label": "Extra-large building = 10,000 m² or more total floor area",
+      "source": "mr33",
+      "clause": "ข้อ ๑ definitions (อาคารขนาดใหญ่พิเศษ)"
+    },
+    "highRiseSetback": {
+      "value": 6,
+      "label": "High-rise / extra-large: outer edge ≥ 6 m from every neighbour boundary and the road",
+      "plain": "Once a building is 23 m+ or 10,000 m²+, the whole building (above and below ground) must stay 6 m from all plot edges. A 6 m clear fire-truck road must also run around it.",
+      "source": "mr33",
+      "clause": "ข้อ ๔ and ข้อ ๓"
+    },
+    "highRiseFrontage": {
+      "label": "High-rise / extra-large: plot needs ≥ 12 m frontage on a public road ≥ 10 m wide (≥ 18 m if total floor area > 30,000 m²)",
+      "source": "mr33",
+      "clause": "ข้อ ๒ (as amended by MR 50)"
+    },
+    "openingSetback": {
+      "label": "Walls with windows/balconies: ≥ 2 m from a neighbour boundary up to 9 m high, ≥ 3 m above 9 m",
+      "source": "bmaOrd2544",
+      "clause": "ข้อ ๕๔"
+    },
+    "aroundBuilding": {
+      "label": "Clear space around the building: ≥ 1 m (height ≤ 15 m), ≥ 2 m (height > 15 m)",
+      "source": "bmaOrd2544",
+      "clause": "ข้อ ๕๕"
+    },
+    "useHotel": {
+      "label": "Hotel > 80 rooms only on a road ≥ 12 m wide or within 500 m of a rail transit station",
+      "source": "plan2556",
+      "clause": "ข้อ ๑๗ (๘)"
+    },
+    "useOffice": {
+      "label": "Office > 10,000 m² only on a road ≥ 12 m wide or within 500 m of a rail transit station",
+      "source": "plan2556",
+      "clause": "ข้อ ๑๗ (๑๐)"
+    },
+    "useCondo": {
+      "label": "Condominium / apartment (อาคารอยู่อาศัยรวม): not restricted in Y.10",
+      "source": "plan2556",
+      "clause": "ข้อ ๑๗ (prohibited-use list (๑)-(๒๙) has no residential restriction)"
+    },
+    "farBonus": {
+      "value": 0.2,
+      "label": "FAR bonus up to +20% combined (affordable units, public open space, park-and-ride, rain retention, green building)",
+      "source": "plan2556",
+      "clause": "ข้อ ๕๑-๕๗ (cap: ข้อ ๕๗)"
+    }
+  }
+}
