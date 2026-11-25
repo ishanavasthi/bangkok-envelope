@@ -22,7 +22,9 @@ These are working notes for Ishan's write-up. Each entry records a call that was
 - **Practical plate.** On a 20×30 m plot the high-rise rules leave a plate of about 144 m². That is legal, but no tower core fits. Towers now need a ≥ 300 m² plate, low-rise ≥ 120 m². This check is labelled practical, not legal.
 - **Frontage.** MR 33 asks for one side of the land ≥ 12 m on the road. If a corner is added on the road edge, the frontage becomes two edges, so the check measures the longest continuous run of road edges, not the longest single edge.
 - **Road marking through edits.** Road edges are kept by index and remapped when a corner is added (both halves stay road) or deleted (the merged edge is road if either was). This is unit-tested.
-- **Neighbour buildings on the plot.** Map tile building ids are not unique: one id covered about 20 buildings around Soi 39, and hiding it emptied the block. The tool now hides by geometry instead, with a MapLibre `within` filter against the plot grown by 2 m.
+- **Neighbour buildings on the plot.** Map tile building ids are not unique: one id covered about 20 buildings around Soi 39, and hiding it emptied the block. A MapLibre `within` geometry filter came next, but a browser test showed it does not evaluate polygon features, so it hid nothing. The final version aggregates by id: it sums each id's footprint across the loaded tiles and hides the id only when more than half of that area lies on the plot. A shared-id housing block that only partly covers the plot stays visible (a known limitation).
+- **Plot reload.** Replacing the plot ("Sample plot", or a new plot) left the old polygon in the drawing layer, and the change handler then read the stale shape and lost the road marking. The fix tracks the plot's feature id and ignores events while it is being replaced.
+- **Height plane geometry.** The plane was first measured to the marked frontage segment. Clause 49 measures perpendicular to the road line, so on a flag lot the segment version gave too much height off to the side (84 m instead of 70 m at one tested point). Road edges are now extended along their line; a flag-lot unit test pins the hand-computed answer.
 - **Permeable ground** (≥ 50% of open space) is shown as a design allowance, not a pass/fail row, because the tool doesn't draw landscaping.
 
 ## Scope calls
@@ -34,6 +36,9 @@ These are working notes for Ishan's write-up. Each entry records a call that was
 - **Hotel room count** is estimated from floor area (about 45 m² gross per key) to test the 80-room trigger.
 - **Station distance** is measured from OSM station nodes. The law measures from the platform edge (plan clause 37), so we're within tens of metres. This is flagged in the UI.
 - **Neighbour heights:** only about 9% of buildings near Asok have height data, in both OSM and Overture (checked 4,002 OSM and 6,400 Overture buildings). Tall towers are mostly tagged; untagged buildings render at a low default. This is a known limitation.
+
+## Open gaps
+- **Legal basis for the 2013 plan still being in force.** Clause 1 gave it five years (to 2018). Sources from 2026 (TCC, The Nation, Thairath) say it is still in force while the 4th revision is drafted. My understanding is that the Town Planning Act B.E. 2562 (2019) dropped fixed plan terms and kept existing plans in force, but I did not find and read that section.
 
 ## Not modelled (and why)
 - Airport height zones, Rattanakosin/heritage height controls, and the specific BMA bans on high-rises in some sois: these are separate regulations that don't cover the Y.10 core, and listing them as warnings is honest. Parking ratios, EIA (needed for condos of 80+ units or 4,000 m²+), fire-lane geometry beyond the 6 m clearance, corner plots on two roads of unequal width (ord. 49 paragraph 2, MR 55 clauses 45-46).

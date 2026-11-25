@@ -110,18 +110,32 @@ export function baseFootprint(inp: Input, regime: Regime, off: RulesOff = {}): R
   return difference(plot, union(cuts));
 }
 
-/** BMA ord. 49: at height z the building must be >= z/2 - W from the road edge. */
+/**
+ * BMA ord. 49: height at a point ≤ 2 × the horizontal distance, measured
+ * perpendicular, to the far side of the nearest public road. The road is a
+ * line, not just the plot's frontage segment, so each road edge is extended
+ * along its own line (ROAD_EXTEND each way) before measuring. Otherwise a
+ * flag lot or a plot wider than its frontage would get extra height off to
+ * the side. At height z the building must be ≥ z/2 − W from that line.
+ */
+const ROAD_EXTEND = 300;
+function roadLines(inp: Input): [Pt, Pt][] {
+  return edges(inp).filter((e) => e.road && e.len > 0).map((e) => {
+    const ux = (e.b[0] - e.a[0]) / e.len, uy = (e.b[1] - e.a[1]) / e.len;
+    return [[e.a[0] - ux * ROAD_EXTEND, e.a[1] - uy * ROAD_EXTEND], [e.b[0] + ux * ROAD_EXTEND, e.b[1] + uy * ROAD_EXTEND]] as [Pt, Pt];
+  });
+}
 export function planeCut(inp: Input, rings: Rings, z: number): Rings {
   const need = z / 2 - inp.roadWidth;
   if (need <= 0 || !inp.roadEdges.length) return rings;
   const cuts: Rings = [];
-  for (const e of edges(inp)) if (e.road) cuts.push(...capsule(e.a, e.b, need));
+  for (const [a, b] of roadLines(inp)) cuts.push(...capsule(a, b, need));
   return difference(rings, union(cuts));
 }
 
 export function maxHeightAt(inp: Input, p: Pt): number {
   let d = Infinity;
-  for (const e of edges(inp)) if (e.road) d = Math.min(d, segDist(p, e.a, e.b));
+  for (const [a, b] of roadLines(inp)) d = Math.min(d, segDist(p, a, b));
   return 2 * (d + inp.roadWidth);
 }
 

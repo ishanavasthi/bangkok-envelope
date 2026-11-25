@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { area, type Pt } from './poly';
-import { baseFootprint, designs, envelope, frontageRun, roadSetback, type Input } from './model';
+import { baseFootprint, designs, envelope, frontageRun, maxHeightAt, roadSetback, type Input } from './model';
 
 const rect = (w: number, d: number): Pt[] => [[0, 0], [w, 0], [w, d], [0, d]];
 // Arc cuts are grown 4 cm to stay conservative, so exact rectangles come out
@@ -120,5 +120,19 @@ describe('frontage and practical plate', () => {
     const b = designs(base(rect(20, 30), { roadWidth: 20 }))[1];
     expect(b.checks.find((c) => c.id === 'plate')?.pass).toBe(false);
     expect(b.pass).toBe(false);
+  });
+});
+
+describe('height plane is measured to the road line, not the frontage segment', () => {
+  // Flag lot: a 12 m frontage on y = 0, widening to 68 m from y = 20.
+  const flag: Pt[] = [[0, 0], [12, 0], [12, 20], [40, 20], [40, 60], [-28, 60], [-28, 20], [0, 20]];
+  it('a point off to the side gets 2 x (perpendicular distance + road width)', () => {
+    const inp = base(flag, { roadWidth: 10 });
+    // (-20, 25): 25 m from the road line y = 0 -> 2 x (25 + 10) = 70 m. Segment distance would give 84 m.
+    expect(maxHeightAt(inp, [-20, 25])).toBeCloseTo(70, 1);
+  });
+  it('designs on a flag lot keep every floor under the plane', () => {
+    const ds = designs(base(flag, { roadWidth: 10 }));
+    for (const d of ds) expect(d.checks.find((c) => c.id === 'plane')?.pass).toBe(true);
   });
 });

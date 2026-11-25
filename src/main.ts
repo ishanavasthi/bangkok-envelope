@@ -7,7 +7,7 @@ import { TerraDrawMapLibreGLAdapter } from 'terra-draw-maplibre-gl-adapter';
 import './style.css';
 import { centroid, distM, makeFrame, type Frame, type LngLat } from './engine/geo';
 import { remapRoad } from './engine/road';
-import { area, intersect, offset, pointInRing, segDist, toPolygons, type Pt, type Rings } from './engine/poly';
+import { area, intersect, pointInRing, segDist, toPolygons, type Pt, type Rings } from './engine/poly';
 import {
   applicableRules, baseFootprint, designs, envelope, fmt, frontageRun, limits, roadSetback, TYPES,
   type BuildingType, type Design, type Input, type Regime, type RulesOff,
@@ -69,7 +69,7 @@ const map: MLMap = new maplibregl.Map({
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
 
-let draw: TerraDraw;
+let draw = undefined as unknown as TerraDraw; // created on map load
 const empty: FC = { type: 'FeatureCollection', features: [] };
 
 map.on('load', () => {
@@ -139,6 +139,7 @@ map.on('load', () => {
   map.on('mouseleave', 'edges-hit', () => { map.getCanvas().style.cursor = ''; });
 
   setupDraw();
+  document.body.classList.add('map-ready');
   map.on('idle', hideBuildingsOnPlot);
   update();
 });
@@ -185,9 +186,10 @@ function setupDraw() {
   loadRingIntoDraw();
   let pending = 0;
   draw.on('change', (ids, type) => {
-    if (st.drawing || type === 'styling') return;
-    const f = draw.getSnapshot().find((x) => x.geometry.type === 'Polygon');
-    if (!f || !ids.includes(f.id as never)) return;
+    if (st.drawing || loading || type === 'styling' || plotId === undefined) return;
+    if (!ids.includes(plotId as never)) return;
+    const f = draw.getSnapshotFeature(plotId);
+    if (!f || f.geometry.type !== 'Polygon') return;
     const coords = (f.geometry as GeoJSON.Polygon).coordinates[0].slice(0, -1) as LngLat[];
     if (coords.length < 3) return;
     st.roadIdx = remapRoad(st.ring, coords, st.roadIdx);
@@ -209,16 +211,33 @@ function setupDraw() {
   });
 }
 
+let plotId: string | number | undefined; // terra-draw id of the plot polygon
+let loading = false; // ignore draw events while we replace the feature ourselves
 function loadRingIntoDraw() {
-  draw.clear();
-  draw.setMode('select');
-  const [id] = draw.addFeatures([{ type: 'Feature', properties: { mode: 'polygon' }, geometry: { type: 'Polygon', coordinates: [[...st.ring, st.ring[0]]] } }]).map((v) => v.id);
-  if (id !== undefined) draw.selectFeature(id);
+  if (!draw) return; // map still loading; setupDraw() loads the ring when it is ready
+  loading = true;
+  try {
+    draw.setMode('select');
+    if (plotId !== undefined) { try { draw.deselectFeature(plotId); } catch { /* not selected */ } }
+    const ids = draw.getSnapshot().map((f) => f.id!).filter((x) => x !== undefined);
+    if (ids.length) draw.removeFeatures(ids);
+    draw.clear();
+    const res = draw.addFeatures([{ type: 'Feature', properties: { mode: 'polygon' }, geometry: { type: 'Polygon', coordinates: [[...st.ring, st.ring[0]]] } }]);
+    plotId = res[0]?.valid ? res[0].id : undefined;
+    if (plotId !== undefined) draw.selectFeature(plotId);
+  } finally {
+    loading = false;
+  }
 }
 
 function startDrawing() {
+  if (!draw) return; // buttons are disabled until the map has loaded
   st.drawing = true;
+  loading = true;
+  if (plotId !== undefined) { try { draw.deselectFeature(plotId); } catch { /* not selected */ } }
   draw.clear();
+  plotId = undefined;
+  loading = false;
   draw.setMode('polygon');
   update();
 }
@@ -378,19 +397,43 @@ function drawMap(inp: Input, frame: Frame, ds: Design[]) {
 let hiddenKey = '';
 /**
  * Hide the existing building(s) standing on the plot, so they don't poke
- * through the new design. Tile feature ids are not unique (one id can cover
- * a whole block), so we filter by geometry instead: any building that lies
- * entirely within the plot, grown by 2 m to absorb mapping offsets.
+ * through the new design. MapLibre's `within` filter does not evaluate
+ * polygon features (tested), so we filter by feature id. Tile ids are not
+ * unique (one OSM relation can cover a whole block), so ids are aggregated:
+ * an id is hidden only when most of its total footprint lies on the plot.
  */
 function hideBuildingsOnPlot() {
   if (!map.getLayer('building-3d') || !last || st.drawing) return;
-  const grown = offset([last.inp.plot], 2);
-  const polys = toPolygons(grown).map((poly) => poly.map((r) => { const ll = r.map(last!.frame.toLngLat); return [...ll, ll[0]]; }));
-  const k = JSON.stringify(st.ring);
+  const frame = last.frame;
+  const plot = last.inp.plot;
+  const xs = plot.map((p) => p[0]), ys = plot.map((p) => p[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs) - 5, Math.max(...xs) + 5, Math.min(...ys) - 5, Math.max(...ys) + 5];
+  const total = new Map<string | number, number>();
+  const inside = new Map<string | number, number>();
+  const seen = new Set<string>();
+  for (const f of map.querySourceFeatures('openmaptiles', { sourceLayer: 'building' })) {
+    if (f.id === undefined) continue;
+    const g = f.geometry;
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+    for (const poly of polys) {
+      const r = poly[0].slice(0, -1).map((p) => frame.toLocal(p as LngLat));
+      if (r.length < 3) continue;
+      // the same building appears in several tiles: count each outline once
+      const k = `${f.id}:${r.length}:${r[0][0].toFixed(1)}:${r[0][1].toFixed(1)}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const a = Math.abs(area([r]));
+      total.set(f.id, (total.get(f.id) ?? 0) + a);
+      if (r.every((p) => p[0] < x0) || r.every((p) => p[0] > x1) || r.every((p) => p[1] < y0) || r.every((p) => p[1] > y1)) continue;
+      const ins = area(intersect([plot], [r]));
+      if (ins > 0) inside.set(f.id, (inside.get(f.id) ?? 0) + ins);
+    }
+  }
+  const ids = [...inside].filter(([id, a]) => a / (total.get(id) || Infinity) > 0.5).map(([id]) => id);
+  const k = ids.sort().join(',');
   if (k === hiddenKey) return;
   hiddenKey = k;
-  if (!polys.length) { map.setFilter('building-3d', null); return; }
-  map.setFilter('building-3d', ['!', ['within', { type: 'MultiPolygon', coordinates: polys }]] as never);
+  map.setFilter('building-3d', ids.length ? ['!', ['in', ['id'], ['literal', ids]]] : null);
 }
 
 // ---------- panel ----------
@@ -627,6 +670,31 @@ update();
     const fs = map.queryRenderedFeatures({ layers: ['building-3d'] });
     const ids = fs.map((f) => f.id);
     return { n: fs.length, distinct: new Set(ids).size, undef: ids.filter((x) => x === undefined).length, sample: ids.slice(0, 8), filter: map.getFilter('building-3d') };
+  },
+  /** Test helper: replace the plot (open ring of [lng, lat]). */
+  setRing: (ring: LngLat[]) => {
+    st.ring = ring; st.roadIdx = [0]; pickBest = true; loadRingIntoDraw(); update();
+    const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+    map.jumpTo({ center: [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2], zoom: 17.6, pitch: 55 });
+  },
+  /** Test helper: a rendered building's outline, to draw a plot around it. */
+  someBuilding: (i = 0) => {
+    const fs = map.queryRenderedFeatures({ layers: ['building-3d'] }).filter((x) => x.geometry.type === 'Polygon');
+    const g = fs[i % fs.length]?.geometry as GeoJSON.Polygon | undefined;
+    return g?.coordinates[0];
+  },
+  /** Rendered buildings whose every vertex lies inside the plot; with `raw`, ignore the hide filter. */
+  onPlot: (raw = false) => {
+    const f = map.getFilter('building-3d');
+    if (raw) map.setFilter('building-3d', null);
+    const inside = (p: number[]) => pointInRing([p[0], p[1]], st.ring as unknown as Pt[]);
+    const n = map.queryRenderedFeatures({ layers: ['building-3d'] }).filter((x) => {
+      const g = x.geometry;
+      const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+      return polys.length && polys.every((poly) => poly[0].every(inside));
+    }).length;
+    if (raw) map.setFilter('building-3d', f as never);
+    return n;
   },
   state: () => ({ roadIdx: st.roadIdx, n: st.ring.length, selected: st.selected, pass: last?.ds.map((d) => `${d.id}:${d.pass}`) }),
 };

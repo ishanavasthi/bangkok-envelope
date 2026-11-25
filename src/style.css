@@ -143,3 +143,4 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .tog { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .tog input { accent-color: var(--brand-2); }
 @media (max-width: 860px) { #legend { top: 8px; bottom: auto; } }
+body:not(.map-ready) [data-act='redraw'], body:not(.map-ready) #goto { opacity: 0.5; pointer-events: none; }
