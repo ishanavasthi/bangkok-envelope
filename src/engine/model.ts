@@ -136,7 +136,7 @@ export interface Design {
   units?: string;
 }
 
-function stackFloors(inp: Input, fp: Rings, maxFloors: number, gfaCap: number, maxH: number): Floor[] {
+export function stackFloors(inp: Input, fp: Rings, maxFloors: number, gfaCap: number, maxH: number): Floor[] {
   const f2f = TYPES[inp.type].f2f;
   const floors: Floor[] = [];
   let total = 0;
@@ -180,6 +180,13 @@ function build(inp: Input, spec: Spec): Design {
   // Footprint must leave enough open space for the GFA it will carry. Iterate
   // because a smaller plate means less GFA, which relaxes the OSR rule.
   let target = Math.min(baseA, maxFootprint(A, openRatio, gfaCap)) * spec.plateShare;
+  if (low) {
+    // Spread the capped floor area over every floor that fits under 23 m,
+    // instead of one huge plate that uses up the 10,000 m² in a single storey.
+    const f2f = TYPES[inp.type].f2f;
+    const nMax = Math.floor((HIGH_RISE_H - 0.01 - GROUND_FLOOR_H) / f2f) + 1;
+    target = Math.min(target, (gfaCap / nMax) * (spec.plateShare < 1 ? spec.plateShare : 1));
+  }
   let floors: Floor[] = [];
   let fp: Rings = [];
   for (let it = 0; it < 6; it++) {

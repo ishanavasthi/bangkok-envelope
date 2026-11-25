@@ -10,11 +10,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/clipper-lib": "^6.4.0",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vitest": "^5.1.2"
   },
   "dependencies": {
+    "clipper-lib": "^6.4.2",
     "clipper2-js": "^1.2.4",
     "maplibre-gl": "^6.19.0",
     "terra-draw": "^1.40.0",

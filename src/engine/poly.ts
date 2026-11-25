@@ -1,50 +1,30 @@
 // Polygon helpers in a local metric frame (metres). All boolean and offset
-// work goes through Clipper2 on integer millimetres, which makes it robust
-// for concave, near-degenerate and self-touching shapes.
-import {
-  Clipper,
-  ClipperOffset,
-  EndType,
-  FillRule,
-  JoinType,
-  Path64,
-  Paths64,
-  Point64,
-} from 'clipper2-js';
+// work goes through Clipper (Angus Johnson, v6.4.2 JS port) on integer
+// millimetres, which keeps it robust for concave, near-degenerate and
+// self-touching shapes. (clipper2-js was tried first and returned wrong
+// insets for a plain rectangle, so it was dropped.)
+import ClipperLib from 'clipper-lib';
 
 export type Pt = [number, number];
 /** A set of rings (outer rings and holes, any orientation), Clipper style. */
 export type Rings = Pt[][];
 
+type IntPt = { X: number; Y: number };
+type Path = IntPt[];
+
 const S = 1000; // metres -> millimetres
 const ARC_TOL = 40; // 4 cm chord error on rounded corners: invisible, and keeps vertex counts low
+const NZ = ClipperLib.PolyFillType.pftNonZero;
 
-/** Stroke or inflate with a coarse arc tolerance (Clipper's default is ~1 mm, far too fine here). */
-function inflate(ps: Paths64, delta: number, join: JoinType, end: EndType): Paths64 {
-  const co = new ClipperOffset(2, ARC_TOL);
-  co.addPaths(ps, join, end);
-  const out = new Paths64();
-  // Open paths and joined outlines: Clipper halves delta, so pass the full width.
-  co.execute(delta, out);
-  return out;
+function toPaths(rs: Rings): Path[] {
+  return rs.filter((r) => r.length >= 2).map((r) => r.map(([x, y]) => ({ X: Math.round(x * S), Y: Math.round(y * S) })));
 }
-
-function toPath(r: Pt[]): Path64 {
-  const p = new Path64();
-  for (const [x, y] of r) p.push(new Point64(Math.round(x * S), Math.round(y * S)));
-  return p;
-}
-function toPaths(rs: Rings): Paths64 {
-  const ps = new Paths64();
-  for (const r of rs) if (r.length >= 2) ps.push(toPath(r));
-  return ps;
-}
-function fromPaths(ps: Paths64): Rings {
+function fromPaths(ps: Path[]): Rings {
   const out: Rings = [];
   for (const p of ps) {
     const r: Pt[] = [];
     for (const q of p) {
-      const pt: Pt = [q.x / S, q.y / S];
+      const pt: Pt = [q.X / S, q.Y / S];
       const last = r[r.length - 1];
       if (!last || last[0] !== pt[0] || last[1] !== pt[1]) r.push(pt);
     }
@@ -54,6 +34,24 @@ function fromPaths(ps: Paths64): Rings {
   return out;
 }
 
+function boolOp(type: number, a: Rings, b: Rings): Rings {
+  const c = new ClipperLib.Clipper();
+  c.AddPaths(toPaths(a), ClipperLib.PolyType.ptSubject, true);
+  if (b.length) c.AddPaths(toPaths(b), ClipperLib.PolyType.ptClip, true);
+  const sol: Path[] = [];
+  c.Execute(type, sol, NZ, NZ);
+  return fromPaths(sol);
+}
+
+/** Offset paths. Closed: delta grows outers / shrinks holes. Open: delta is the half-width. */
+function inflate(ps: Path[], delta: number, join: number, end: number): Path[] {
+  const co = new ClipperLib.ClipperOffset(2, ARC_TOL);
+  co.AddPaths(ps, join, end);
+  const sol: Path[] = [];
+  co.Execute(sol, delta);
+  return sol;
+}
+
 /** Union of several ring sets, each filled on its own (orientation-safe). */
 export function unionAll(sets: Rings[]): Rings {
   let acc: Rings = [];
@@ -61,53 +59,40 @@ export function unionAll(sets: Rings[]): Rings {
   return acc;
 }
 export function union(a: Rings, b: Rings = []): Rings {
-  return fromPaths(Clipper.Union(toPaths(a), toPaths(b), FillRule.NonZero));
+  return boolOp(ClipperLib.ClipType.ctUnion, a, b);
 }
 export function difference(a: Rings, b: Rings): Rings {
   if (!b.length) return a.map((r) => r.slice());
-  return fromPaths(Clipper.Difference(toPaths(a), toPaths(b), FillRule.NonZero));
+  return boolOp(ClipperLib.ClipType.ctDifference, a, b);
 }
 export function intersect(a: Rings, b: Rings): Rings {
-  return fromPaths(Clipper.Intersect(toPaths(a), toPaths(b), FillRule.NonZero));
+  return boolOp(ClipperLib.ClipType.ctIntersection, a, b);
 }
-/** Uniform inset (negative d) or outset (positive d) of closed polygons. */
+/** Normalise a possibly self-intersecting ring set into clean polygons (outers and holes correctly oriented). */
+export function clean(a: Rings): Rings {
+  return boolOp(ClipperLib.ClipType.ctUnion, a, []);
+}
+/**
+ * Uniform inset (negative d) or outset (positive d). Corners are rounded,
+ * which matches "at least d from the boundary" exactly. The inset is grown by
+ * the arc tolerance so polygonised arcs never come closer than d.
+ */
 export function offset(a: Rings, d: number): Rings {
   if (d === 0 || !a.length) return a.map((r) => r.slice());
-  // clipper2-js's closed-polygon offset returned shifted shapes in testing, so
-  // offset by stroking the outline (a band of half-width |d|) and then
-  // subtracting it (inset) or adding it (outset). Corners come out round.
-  const band = fromPaths(inflate(toPaths(a), 2 * (Math.abs(d) * S + ARC_TOL), JoinType.Round, EndType.Joined));
-  return d < 0 ? difference(a, band) : union(a, band);
-}
-/** Outer rings positive (counter-clockwise), holes negative, as Clipper's offset expects. */
-export function orient(a: Rings): Rings {
-  const out: Rings = [];
-  for (const poly of toPolygons(a)) {
-    poly.forEach((r, i) => {
-      const pos = ringArea(r) > 0;
-      out.push((i === 0) === pos ? r : r.slice().reverse());
-    });
-  }
-  return out;
-}
-/** Normalise a possibly self-intersecting ring into clean polygons. */
-export function clean(a: Rings): Rings {
-  return fromPaths(Clipper.Union(toPaths(a), new Paths64(), FillRule.NonZero));
+  const delta = d < 0 ? d * S - ARC_TOL : d * S;
+  return fromPaths(inflate(toPaths(clean(a)), delta, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon));
 }
 
 /**
  * Everything within distance d of the segment a-b (a capsule). This is the
  * literal reading of "at least d from the boundary": the distance to the
- * boundary segment, including its end points.
+ * boundary segment, including its end points. Arcs are polygonised with
+ * vertices on the circle, so chords dip inside it by up to ARC_TOL; the
+ * radius is grown by that much so the cut stays conservative.
  */
 export function capsule(a: Pt, b: Pt, d: number): Rings {
   if (d <= 0) return [];
-  const seg = new Paths64();
-  seg.push(toPath([a, b]));
-  // Clipper2 treats delta as the full width for open paths (it halves it).
-  // Arcs are polygonised with vertices on the circle, so chords dip inside it
-  // by up to ARC_TOL. Grow the radius by that much so the cut stays conservative.
-  return fromPaths(inflate(seg, 2 * (d * S + ARC_TOL), JoinType.Round, EndType.Round));
+  return fromPaths(inflate(toPaths([[a, b]]), d * S + ARC_TOL, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etOpenRound));
 }
 
 export function ringArea(r: Pt[]): number {
@@ -184,12 +169,43 @@ export function toPolygons(a: Rings): Pt[][][] {
 export function shrinkToArea(a: Rings, target: number): { rings: Rings; inset: number } {
   const full = area(a);
   if (full <= target) return { rings: a, inset: 0 };
-  let lo = 0, hi = 1;
-  while (area(offset(a, -hi)) > target && hi < 500) hi *= 2;
-  for (let i = 0; i < 40 && hi - lo > 0.01; i++) {
-    const mid = (lo + hi) / 2;
-    if (area(offset(a, -mid)) > target) lo = mid;
-    else hi = mid;
+  // Newton steps on area(δ): d(area)/dδ ≈ -perimeter. Converges in a few
+  // iterations, where bisection needed ~20 offsets of a many-vertex shape.
+  // We keep the best inset that is at or under target, so the result never
+  // exceeds it.
+  let d = 0, cur = a, curA = full;
+  let best: { rings: Rings; inset: number } | null = null;
+  // No inset can exceed half the smaller bounding-box side (the shape is gone by then).
+  const xs = a.flat().map((p) => p[0]), ys = a.flat().map((p) => p[1]);
+  const maxInset = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2 + 0.01;
+  let lo = 0, hi = maxInset; // bracket: area(lo) > target >= area(hi)
+  const tol = Math.max(0.5, target * 0.002);
+  for (let i = 0; i < 16; i++) {
+    const per = perimeter(cur) || 1;
+    // Aim half a tolerance under target so millimetre rounding cannot leave
+    // us stuck a hair above it.
+    let next = d + (curA - (target - tol / 2)) / per;
+    if (next - d < 1e-3 && curA > target) next = d + 1e-3;
+    if (!(next > lo && next < hi)) next = (lo + hi) / 2;
+    d = next;
+    cur = offset(a, -d);
+    curA = area(cur);
+    if (curA > target) lo = d;
+    else {
+      hi = d;
+      best = { rings: cur, inset: d };
+      if (target - curA < tol) break;
+    }
+    if (!curA) break;
   }
-  return { rings: offset(a, -hi), inset: hi };
+  return best ?? { rings: offset(a, -hi), inset: hi };
+}
+
+export function perimeter(a: Rings): number {
+  let s = 0;
+  for (const r of a) for (let i = 0; i < r.length; i++) {
+    const p = r[i], q = r[(i + 1) % r.length];
+    s += Math.hypot(q[0] - p[0], q[1] - p[1]);
+  }
+  return s;
 }

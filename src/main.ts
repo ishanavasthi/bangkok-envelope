@@ -114,7 +114,7 @@ map.on('load', () => {
     'fill-extrusion-color': ['get', 'color'],
     'fill-extrusion-base': ['get', 'base'],
     'fill-extrusion-height': ['get', 'top'],
-    'fill-extrusion-opacity': 0.26,
+    'fill-extrusion-opacity': 0.16,
   } });
   map.addLayer({ id: 'design', type: 'fill-extrusion', source: 'design', paint: {
     'fill-extrusion-color': ['get', 'color'],
@@ -367,10 +367,10 @@ function drawMap(inp: Input, frame: Frame, ds: Design[]) {
   setData('env', { type: 'FeatureCollection', features: envFeats });
 
   const df: GeoJSON.Feature[] = [];
-  const palette = d.pass ? ['#f4efe6', '#e9e1d2'] : ['#f3c7bd', '#eab0a3'];
+  const palette = d.pass ? ['#f6eedf', '#eadbc0'] : ['#f2b8a8', '#e59a86'];
   d.floors.forEach((fl, k) => {
     const gap = fl.n === 1 ? 0 : 0.22;
-    df.push(...ringsToFeatures(fl.rings, frame, { base: fl.z0 + gap, top: fl.z1, color: k === 0 ? '#c9b99a' : palette[k % 2] }));
+    df.push(...ringsToFeatures(fl.rings, frame, { base: fl.z0 + gap, top: fl.z1, color: k === 0 ? (d.pass ? '#b7905f' : '#c0604a') : palette[k % 2] }));
   });
   setData('design', { type: 'FeatureCollection', features: df });
   setData('plot', empty);
@@ -569,3 +569,6 @@ function renderLegend(d: Design) {
     <div class="lg"><i class="sw ${st.envelope === 'low' ? 'envl' : 'envh'}"></i>Allowed space</div>
     <div class="lg"><i class="sw ${d.pass ? 'des' : 'desbad'}"></i>Design ${d.id}: ${d.pass ? 'passes' : 'fails'}</div>`;
 }
+
+// Show results straight away; the map layers fill in once the style has loaded.
+update();
